@@ -372,7 +372,9 @@ VesLinearExpansion::VesLinearExpansion(const ActionOptions&ao):
   checkThatTemperatureIsGiven();
   bias_expansion_pntr_ = new LinearBasisSetExpansion(getLabel(),getBeta(),comm,args_pntrs,basisf_pntrs_,getCoeffsPntr());
   bias_expansion_pntr_->linkVesBias(this);
-  bias_expansion_pntr_->setGridBins(this->getGridBins());
+  if (this->getGridBins()[0] != 0) {
+    bias_expansion_pntr_->setGridBins(this->getGridBins());
+  }
   //
   bf_values.assign(ncoeffs_,0.0);
 
