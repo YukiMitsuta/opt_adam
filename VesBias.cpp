@@ -44,6 +44,8 @@ VesBias::VesBias(const ActionOptions&ao):
   Bias(ao),
   ncoeffssets_(0),
   coeffs_pntrs_(0),
+  adamm_pntrs_(0),
+  adamv_pntrs_(0),
   targetdist_averages_pntrs_(0),
   gradient_pntrs_(0),
   hessian_pntrs_(0),
@@ -245,6 +247,12 @@ VesBias::~VesBias() {
   if(bias_cutoff_swfunc_pntr_!=NULL) {
     delete bias_cutoff_swfunc_pntr_;
   }
+  for(unsigned int i=0; i<adamm_pntrs_.size(); i++) {
+    delete adamm_pntrs_[i];
+  }
+  for(unsigned int i=0; i<adamv_pntrs_.size(); i++) {
+    delete adamv_pntrs_[i];
+  }
 }
 
 
@@ -379,6 +387,16 @@ void VesBias::initializeCoeffs(CoeffsVector* coeffs_pntr_in) {
   sampled_cross_averages.push_back(cross_aver_sampled_tmp);
   //
   aver_counters.push_back(0);
+  //
+  CoeffsVector* adamm_tmp = new CoeffsVector(*coeffs_pntr_in);
+  label = getCoeffsSetLabelString("adam_m",ncoeffssets_);
+  adamm_tmp->setLabels(label);
+  adamm_pntrs_.push_back(adamm_tmp);
+  //
+  CoeffsVector* adamv_tmp = new CoeffsVector(*coeffs_pntr_in);
+  label = getCoeffsSetLabelString("adam_v",ncoeffssets_);
+  adamv_tmp->setLabels(label);
+  adamv_pntrs_.push_back(adamv_tmp);
   //
   ncoeffssets_++;
 }
@@ -603,6 +621,11 @@ void VesBias::disableHessian() {
     cross_aver_sampled_tmp.assign(hessian_pntrs_[i]->getSize(),0.0);
     sampled_cross_averages.push_back(cross_aver_sampled_tmp);
   }
+}
+
+
+void VesBias::apply() {
+  Bias::apply();
 }
 
 
