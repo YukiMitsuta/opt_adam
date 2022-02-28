@@ -59,6 +59,7 @@ private:
   //
   std::vector<double> stepsizes_;
   std::vector<double> current_stepsizes;
+  std::vector<double> final_stepsizes_;
   bool fixed_stepsize_;
   //
   unsigned int iter_counter;
@@ -66,6 +67,8 @@ private:
   bool use_hessian_;
   bool diagonal_hessian_;
   bool hessian_covariance_from_averages_;
+  //
+  //bool use_adam_;
   //
   bool monitor_instantaneous_gradient_;
   //
@@ -91,6 +94,14 @@ private:
   std::vector<OFile*> hessianOFiles_;
   std::string hessian_output_fmt_;
   //
+  unsigned int adamm_wstride_;
+  std::vector<OFile*> adammOFiles_;
+  std::string adamm_output_fmt_;
+  //
+  unsigned int adamv_wstride_;
+  std::vector<OFile*> adamvOFiles_;
+  std::string adamv_output_fmt_;
+  //
   unsigned int targetdist_averages_wstride_;
   std::vector<OFile*> targetdist_averagesOFiles_;
   std::string targetdist_averages_output_fmt_;
@@ -106,6 +117,9 @@ private:
   std::vector<CoeffsMatrix*> hessian_pntrs_;
   std::vector<CoeffsVector*> coeffs_mask_pntrs_;
   std::vector<CoeffsVector*> targetdist_averages_pntrs_;
+  //
+  std::vector<CoeffsVector*> adamm_pntrs_;
+  std::vector<CoeffsVector*> adamv_pntrs_;
   //
   bool identical_coeffs_shape_;
   //
@@ -126,6 +140,7 @@ private:
   void updateOutputComponents();
   void writeOutputFiles(const unsigned int coeffs_id = 0);
   void readCoeffsFromFiles(const std::vector<std::string>&, const bool);
+  void readAdamTermsFromFiles(const std::vector<std::string>&, const bool);
   void setAllCoeffsSetIterationCounters();
 protected:
   void turnOnHessian();
@@ -140,7 +155,12 @@ protected:
   CoeffsMatrix& Hessian(const unsigned int coeffs_id = 0) const;
   CoeffsVector& CoeffsMask(const unsigned int coeffs_id = 0) const;
   CoeffsVector& TargetDistAverages(const unsigned int coeffs_id = 0) const;
+
+  CoeffsVector& AdamM(const unsigned int coeffs_id = 0) const;
+  CoeffsVector& AdamV(const unsigned int coeffs_id = 0) const;
+
   double StepSize(const unsigned int coeffs_id = 0) const;
+  double FinalStepSize(const unsigned int coeffs_id = 0) const;
   virtual void coeffsUpdate(const unsigned int coeffs_id = 0) = 0;
   void setCurrentStepSize(const double,const unsigned int i = 0);
   void setCurrentStepSizes(const std::vector<double>&);
@@ -161,6 +181,8 @@ public:
   static void useHessianKeywords(Keywords&);
   static void useFixedStepSizeKeywords(Keywords&);
   static void useDynamicStepSizeKeywords(Keywords&);
+  static void useFinalStepSizeKeywords(Keywords&);
+  static void useAdamFactorKeywords(Keywords&);
   static void useMaskKeywords(Keywords&);
   static void useRestartKeywords(Keywords&);
   static void useMonitorAverageGradientKeywords(Keywords&);
@@ -188,16 +210,18 @@ public:
   void setIterationCounter(const unsigned int);
   void increaseIterationCounter();
   //
-  void apply() override {};
-  void calculate() override {};
-  void update() override;
-  unsigned int getNumberOfDerivatives() override {return 0;}
+  void apply() {};
+  void calculate() {};
+  void update();
+  unsigned int getNumberOfDerivatives() {return 0;}
   //
   bool fixedStepSize() const {return fixed_stepsize_;}
   bool dynamicStepSize() const {return !fixed_stepsize_;}
   //
   bool useHessian() const {return use_hessian_;}
   bool diagonalHessian() const {return diagonal_hessian_;}
+  //
+  //bool useAdam() const {return use_adam_;}
   //
   bool useMultipleWalkers() const {return use_mwalkers_mpi_;}
   //
@@ -208,6 +232,9 @@ public:
   std::vector<CoeffsMatrix*> getHessianPntrs() const {return hessian_pntrs_;}
   std::vector<CoeffsVector*> getCoeffsMaskPntrs() const {return coeffs_mask_pntrs_;}
   std::vector<CoeffsVector*> getTargetDistAveragesPntrs() const {return targetdist_averages_pntrs_;}
+  //
+  std::vector<CoeffsVector*> getAdamMPntrs()const {return adamm_pntrs_;}
+  std::vector<CoeffsVector*> getAdamVPntrs()const {return adamv_pntrs_;}
   //
   bool isBiasOutputActive() const {return bias_output_active_;}
   unsigned int getBiasOutputStride() const {return bias_output_stride_;}
@@ -234,10 +261,18 @@ public:
   void setTargetDistProjOutputStride(unsigned int stride) {targetdist_proj_output_stride_=stride;}
   void writeTargetDistProjOutputFiles() const;
   //
+  double beta1_;
+  double beta2_;
+  double epsilon_;
+  double iter_decay_;
+  //
 };
 
 inline
 double Optimizer::StepSize(const unsigned int coeffs_id) const {return stepsizes_[coeffs_id];}
+
+inline
+double Optimizer::FinalStepSize(const unsigned int coeffs_id) const {return final_stepsizes_[coeffs_id];}
 
 inline
 CoeffsVector& Optimizer::Coeffs(const unsigned int coeffs_id) const {return *coeffs_pntrs_[coeffs_id];}
@@ -302,6 +337,12 @@ void Optimizer::increaseIterationCounter() {iter_counter++;}
 
 inline
 void Optimizer::setIterationCounter(const unsigned int iter_counter_in) {iter_counter = iter_counter_in;}
+
+inline
+CoeffsVector& Optimizer::AdamM(const unsigned int coeffs_id) const {return *adamm_pntrs_[coeffs_id];}
+
+inline
+CoeffsVector& Optimizer::AdamV(const unsigned int coeffs_id) const {return *adamv_pntrs_[coeffs_id];}
 
 
 template<class T>
