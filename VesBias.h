@@ -67,6 +67,10 @@ private:
   std::vector<CoeffsMatrix*> hessian_pntrs_;
   std::vector<std::vector<double> > sampled_averages;
   std::vector<std::vector<double> > sampled_cross_averages;
+  //
+  std::vector<CoeffsVector*> adamm_pntrs_;
+  std::vector<CoeffsVector*> adamv_pntrs_;
+  //
   bool use_multiple_coeffssets_;
   //
   std::vector<std::string> coeffs_fnames;
@@ -149,6 +153,8 @@ public:
   explicit VesBias(const ActionOptions&ao);
   ~VesBias();
   //
+  void apply();
+  //
   static void useInitialCoeffsKeywords(Keywords&);
   static void useTargetDistributionKeywords(Keywords&);
   static void useMultipleTargetDistributionKeywords(Keywords&);
@@ -163,6 +169,9 @@ public:
   std::vector<CoeffsVector*> getGradientPntrs()const {return gradient_pntrs_;}
   std::vector<CoeffsMatrix*> getHessianPntrs() const {return hessian_pntrs_;}
   std::vector<TargetDistribution*> getTargetDistributionPntrs() const {return targetdist_pntrs_;}
+  //
+  std::vector<CoeffsVector*> getAdamMPntrs()const {return adamm_pntrs_;}
+  std::vector<CoeffsVector*> getAdamVPntrs()const {return adamv_pntrs_;}
   //
   CoeffsVector* getCoeffsPntr(const unsigned int coeffs_id = 0) const {return coeffs_pntrs_[coeffs_id];}
   CoeffsVector* getTargetDistAveragesPntr(const unsigned int coeffs_id = 0) const {return targetdist_averages_pntrs_[coeffs_id];}
