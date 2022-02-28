@@ -47,6 +47,7 @@ Optimizer::Optimizer(const ActionOptions&ao):
   fixed_stepsize_(true),
   iter_counter(0),
   use_hessian_(false),
+  //use_adam_(false),
   diagonal_hessian_(true),
   monitor_instantaneous_gradient_(false),
   use_mwalkers_mpi_(false),
@@ -88,7 +89,17 @@ Optimizer::Optimizer(const ActionOptions&ao):
   targetdist_output_stride_(0),
   targetdist_proj_output_active_(false),
   targetdist_proj_output_stride_(0),
-  isFirstStep(true)
+  isFirstStep(true),
+  beta1_(0.0),
+  beta2_(0.0),
+  iter_decay_(1.0),
+  epsilon_(0.0),
+  adamm_wstride_(100),
+  adammOFiles_(0),
+  adamm_output_fmt_(""),
+  adamv_wstride_(100),
+  adamvOFiles_(0),
+  adamv_output_fmt_("")
 {
   std::vector<std::string> bias_labels(0);
   parseVector("BIAS",bias_labels);
@@ -105,6 +116,10 @@ Optimizer::Optimizer(const ActionOptions&ao):
     std::vector<CoeffsVector*> pntrs_coeffs = bias_pntrs_[i]->getCoeffsPntrs();
     std::vector<CoeffsVector*> pntrs_gradient = bias_pntrs_[i]->getGradientPntrs();
     std::vector<CoeffsVector*> pntrs_targetdist_averages = bias_pntrs_[i]->getTargetDistAveragesPntrs();
+    //
+    std::vector<CoeffsVector*> pntrs_adamm = bias_pntrs_[i]->getAdamMPntrs();
+    std::vector<CoeffsVector*> pntrs_adamv = bias_pntrs_[i]->getAdamVPntrs();
+    //
     plumed_massert(pntrs_coeffs.size()==pntrs_gradient.size(),"something wrong in the coefficients and gradient passed from VES bias");
     plumed_massert(pntrs_coeffs.size()==pntrs_targetdist_averages.size(),"something wrong in the coefficients and target distribution averages passed from VES bias");
     for(unsigned int k=0; k<pntrs_coeffs.size(); k++) {
@@ -117,6 +132,13 @@ Optimizer::Optimizer(const ActionOptions&ao):
       gradient_pntrs_.push_back(pntrs_gradient[k]);
       pntrs_targetdist_averages[k]->turnOnIterationCounter();
       targetdist_averages_pntrs_.push_back(pntrs_targetdist_averages[k]);
+      //
+      if(keywords.exists("ADAM_M_FILE")) {
+        pntrs_adamm[k]->turnOnIterationCounter();
+        adamm_pntrs_.push_back(pntrs_adamm[k]);
+        pntrs_adamv[k]->turnOnIterationCounter();
+        adamv_pntrs_.push_back(pntrs_adamv[k]);
+      }
       //
       CoeffsVector* aux_coeffs_tmp = new CoeffsVector(*pntrs_coeffs[k]);
       std::string aux_label = pntrs_coeffs[k]->getLabel();
@@ -157,6 +179,9 @@ Optimizer::Optimizer(const ActionOptions&ao):
     fixed_stepsize_=false;
     parseMultipleValues("INITIAL_STEPSIZE",stepsizes_);
     setCurrentStepSizes(stepsizes_);
+  }
+  if(keywords.exists("FINAL_STEPSIZE")) {
+    parseMultipleValues("FINAL_STEPSIZE",final_stepsizes_);
   }
   //
   if(ncoeffssets_==1) {
@@ -479,6 +504,105 @@ Optimizer::Optimizer(const ActionOptions&ao):
     }
   }
 
+  std::vector<std::string> adamm_fnames;
+  if(keywords.exists("ADAM_M_FILE")) {
+    parseFilenames("ADAM_M_FILE",adamm_fnames);
+
+    if(getRestart()) {
+      for(unsigned int i=0; i<adamm_fnames.size(); i++) {
+        IFile ifile;
+        ifile.link(*this);
+        if(use_mwalkers_mpi_) {ifile.enforceSuffix("");}
+        bool file_exist = ifile.FileExist(adamm_fnames[i]);
+        if(!file_exist) {
+          std::string fname = FileBase::appendSuffix(adamm_fnames[i],ifile.getSuffix());
+          plumed_merror("Cannot find coefficient file " + fname + " when trying to restart an optimzation. If you don't want to restart the optimzation please remove the RESTART keyword or use the RESTART=NO within the "+getName()+" action to locally disable the restart.");
+        }
+      }
+      readAdamTermsFromFiles(adamm_fnames,true);
+      comm.Barrier();
+      if(comm.Get_rank()==0 && use_mwalkers_mpi_) {
+        multi_sim_comm.Barrier();
+      }
+    }
+    parse("ADAM_M_OUTPUT",adamm_wstride_);
+
+    if(coeffs_fnames.size()>0) {
+      for(unsigned int i=0; i<adamm_fnames.size(); i++) {
+        plumed_massert(adamm_fnames[i]!=coeffs_fnames[i],"COEFFS_FILE and ADAM_M_FILE cannot be the same");
+      }
+    }
+    setupOFiles(adamm_fnames,adammOFiles_,mw_single_files);
+    parse("ADAM_M_FMT",adamm_output_fmt_);
+    if(adamm_output_fmt_.size()>0) {
+      for(unsigned int i=0; i<ncoeffssets_; i++) {
+        adamm_pntrs_[i]->setOutputFmt(adamm_output_fmt_);
+      }
+    }
+
+    if(adamm_fnames.size()>0) {
+      if(ncoeffssets_==1) {
+        log.printf("  m terms of Adam will be written out to file %s every %u iterations\n",adammOFiles_[0]->getPath().c_str(),adamm_wstride_);
+      }
+      else {
+        log.printf("  m terms of Adam will be written out to the following files every %u iterations:\n",adamm_wstride_);
+        for(unsigned int i=0; i<adamm_fnames.size(); i++) {
+          log.printf("   coefficient set %u: %s\n",i,adammOFiles_[i]->getPath().c_str());
+        }
+      }
+    }
+  }
+
+  std::vector<std::string> adamv_fnames;
+  if(keywords.exists("ADAM_V_FILE")) {
+    parseFilenames("ADAM_V_FILE",adamv_fnames);
+
+    if(getRestart()) {
+      for(unsigned int i=0; i<adamv_fnames.size(); i++) {
+        IFile ifile;
+        ifile.link(*this);
+        if(use_mwalkers_mpi_) {ifile.enforceSuffix("");}
+        bool file_exist = ifile.FileExist(adamv_fnames[i]);
+        if(!file_exist) {
+          std::string fname = FileBase::appendSuffix(adamv_fnames[i],ifile.getSuffix());
+          plumed_merror("Cannot find coefficient file " + fname + " when trying to restart an optimzation. If you don't want to restart the optimzation please remove the RESTART keyword or use the RESTART=NO within the "+getName()+" action to locally disable the restart.");
+        }
+      }
+      readAdamTermsFromFiles(adamv_fnames,false);
+      comm.Barrier();
+      if(comm.Get_rank()==0 && use_mwalkers_mpi_) {
+        multi_sim_comm.Barrier();
+      }
+    }
+    parse("ADAM_V_OUTPUT",adamv_wstride_);
+
+    if(coeffs_fnames.size()>0) {
+      for(unsigned int i=0; i<adamv_fnames.size(); i++) {
+        plumed_massert(adamv_fnames[i]!=coeffs_fnames[i],"COEFFS_FILE and ADAM_V_FILE cannot be the same");
+      }
+    }
+    setupOFiles(adamv_fnames,adamvOFiles_,mw_single_files);
+
+    parse("ADAM_V_FMT",adamv_output_fmt_);
+    if(adamv_output_fmt_.size()>0) {
+      for(unsigned int i=0; i<ncoeffssets_; i++) {
+        adamv_pntrs_[i]->setOutputFmt(adamv_output_fmt_);
+      }
+    }
+
+    if(adamv_fnames.size()>0) {
+      if(ncoeffssets_==1) {
+        log.printf(" v tarms of Adam will be written out to file %s every %u iterations\n",adamvOFiles_[0]->getPath().c_str(),adamv_wstride_);
+      }
+      else {
+        log.printf(" v tarms of Adam will be written out to the following files every %u iterations:\n",adamv_wstride_);
+        for(unsigned int i=0; i<adamv_fnames.size(); i++) {
+          log.printf("   adam V term set %u: %s\n",i,adamvOFiles_[i]->getPath().c_str());
+        }
+      }
+    }
+  }
+
 
   //
   if(keywords.exists("MASK_FILE")) {
@@ -670,9 +794,6 @@ Optimizer::Optimizer(const ActionOptions&ao):
       if(targetdist_output_stride_%ustride_targetdist_!=0) {
         plumed_merror("the value given in TARGETDIST_OUTPUT doesn't make sense, it should be multiple of TARGETDIST_STRIDE");
       }
-      if(targetdist_output_stride_%coeffs_wstride_!=0) {
-        plumed_merror("the value given in TARGETDIST_OUTPUT doesn't make sense, it should be multiple of COEFFS_OUTPUT");
-      }
 
       targetdist_output_active_=true;
       for(unsigned int i=0; i<nbiases_; i++) {
@@ -737,7 +858,7 @@ Optimizer::Optimizer(const ActionOptions&ao):
   else {
     for(unsigned int i=0; i<ncoeffssets_; i++) {
       log.printf("  Output Components for coefficient set %u:\n",i);
-      std::string is=""; Tools::convert(i,is); is = "-" + coeffssetid_prefix_ + is;
+      std::string is=""; Tools::convert(i,is); is = "_" + coeffssetid_prefix_ + is;
       log.printf(" ");
       if(monitor_instantaneous_gradient_) {
         addComponent("gradrms"+is); componentIsNotPeriodic("gradrms"+is);
@@ -757,20 +878,27 @@ Optimizer::Optimizer(const ActionOptions&ao):
       }
     }
   }
+  if(keywords.exists("BETA1")) {
+    parse("BETA1",beta1_);
+    log.printf("  optimization parameter of Adam method is performed as Beta1 = %f\n", beta1_);
+  }
+  if(keywords.exists("BETA2")) {
+    parse("BETA2",beta2_);
+    log.printf("  optimization parameter of Adam method is performed as Beta2 = %f\n", beta2_);
+  }
+  if(keywords.exists("EPSILON")) {
+    parse("EPSILON",epsilon_);
+    log.printf("  optimization parameter of Adam method is performed as Epsilon = %f\n", epsilon_);
+  }
+  if(keywords.exists("ITER_DECAY")) {
+    parse("ITER_DECAY",iter_decay_);
+    log.printf("  optimization parameter of Adam method is performed as t_decay = %f\n", iter_decay_);
+  }
 
 }
 
 
 Optimizer::~Optimizer() {
-  //
-  for(unsigned int i=0; i<ncoeffssets_; i++) {
-    if(coeffsOFiles_.size()>0 && getIterationCounter()%coeffs_wstride_!=0) {
-      coeffs_pntrs_[i]->writeToFile(*coeffsOFiles_[i],aux_coeffs_pntrs_[i],false);
-    }
-    if(targetdist_averagesOFiles_.size()>0 && iter_counter%targetdist_averages_wstride_!=0) {
-      targetdist_averages_pntrs_[i]->writeToFile(*targetdist_averagesOFiles_[i]);
-    }
-  }
   //
   if(!isTargetDistOutputActive()) {
     for(unsigned int i=0; i<nbiases_; i++) {
@@ -781,21 +909,8 @@ Optimizer::~Optimizer() {
       }
     }
   }
-  //
-  if(isBiasOutputActive() && getIterationCounter()%getBiasOutputStride()!=0) {
-    writeBiasOutputFiles();
-  }
-  if(isFesOutputActive() && getIterationCounter()%getFesOutputStride()!=0) {
-    writeFesOutputFiles();
-  }
-  if(isFesProjOutputActive() && getIterationCounter()%getFesProjOutputStride()!=0) {
-    writeFesProjOutputFiles();
-  }
-  if(isTargetDistOutputActive() && getIterationCounter()%getTargetDistOutputStride()!=0) {
+  else if(isTargetDistOutputActive() && getIterationCounter()%getTargetDistOutputStride()!=0) {
     writeTargetDistOutputFiles();
-  }
-  if(isTargetDistProjOutputActive() && getIterationCounter()%getTargetDistProjOutputStride()!=0) {
-    writeTargetDistProjOutputFiles();
   }
   //
   for(unsigned int i=0; i<aux_coeffs_pntrs_.size(); i++) {
@@ -833,6 +948,18 @@ Optimizer::~Optimizer() {
     delete targetdist_averagesOFiles_[i];
   }
   targetdist_averagesOFiles_.clear();
+/*
+  for(unsigned int i=0; i<adammOFiles_.size(); i++) {
+    adammOFiles_[i]->close();
+    delete adammOFiles_[i];
+  }
+  adammOFiles_.clear();
+  for(unsigned int i=0; i<adamvOFiles_.size(); i++) {
+    adamvOFiles_[i]->close();
+    delete adamvOFiles_[i];
+  }
+  adamvOFiles_.clear();
+*/
 }
 
 
@@ -858,6 +985,7 @@ void Optimizer::registerKeywords( Keywords& keys ) {
   // Either use a fixed stepsize (useFixedStepSizeKeywords) or changing stepsize (useDynamicsStepSizeKeywords)
   keys.reserve("compulsory","STEPSIZE","the step size used for the optimization");
   keys.reserve("compulsory","INITIAL_STEPSIZE","the initial step size used for the optimization");
+  keys.reserve("compulsory","FINAL_STEPSIZE","the initial step size used for the optimization");
   // Keywords related to the Hessian, actived with the useHessianKeywords function
   keys.reserveFlag("FULL_HESSIAN",false,"if the full Hessian matrix should be used for the optimization, otherwise only the diagonal part of the Hessian is used");
   keys.reserve("hidden","HESSIAN_FILE","the name of output file for the Hessian");
@@ -890,6 +1018,17 @@ void Optimizer::registerKeywords( Keywords& keys ) {
   //
   keys.reserve("optional","REWEIGHT_FACTOR_STRIDE","stride for updating the reweighting factor c(t). Note that the value is given in terms of coefficient iterations.");
   //
+  keys.reserve("optional","BETA1","option in Adam method");
+  keys.reserve("optional","BETA2","option in Adam method");
+  keys.reserve("optional","ITER_DECAY","option in Adam method");
+  keys.reserve("optional","EPSILON","option in Adam method");
+  keys.reserve("hidden","ADAM_M_FILE","the name of output file for the m (derivative) terms of the Adam method");
+  keys.add("hidden","ADAM_M_OUTPUT","how often the m terms of the Adam method should be written to file. This parameter is given as the number of bias iterations. It is by default 100 if ADAM_M_FILE is specficed");
+  keys.add("hidden","ADAM_M_FMT","specify format for m terms file(s) (useful for decrease the number of digits in regtests)");
+  keys.reserve("hidden","ADAM_V_FILE","the name of output file for the v terms of Adam method");
+  keys.add("hidden","ADAM_V_OUTPUT","how often the v part fo Adam method should be written to file. This parameter is given as the number of bias iterations. It is by default 100 if ADAM_V_FILE is specficed");
+  keys.add("hidden","ADAM_V_FMT","specify format for v terms file(s) (useful for decrease the number of digits in regtests)");
+  //
   keys.use("RESTART");
   //
   keys.use("UPDATE_FROM");
@@ -897,6 +1036,7 @@ void Optimizer::registerKeywords( Keywords& keys ) {
   // Components that are always active
   keys.addOutputComponent("gradrms","MONITOR_INSTANTANEOUS_GRADIENT","the root mean square value of the coefficient gradient. For multiple biases this component is labeled using the number of the bias as gradrms-#.");
   keys.addOutputComponent("gradmax","MONITOR_INSTANTANEOUS_GRADIENT","the largest absolute value of the coefficient gradient. For multiple biases this component is labeled using the number of the bias as gradmax-#.");
+  ActionWithValue::useCustomisableComponents(keys);
   // keys.addOutputComponent("gradmaxidx","default","the index of the maximum absolute value of the gradient");
 
 }
@@ -924,6 +1064,9 @@ void Optimizer::useDynamicStepSizeKeywords(Keywords& keys) {
   keys.use("INITIAL_STEPSIZE");
   keys.addOutputComponent("stepsize","default","the current value of step size used to update the coefficients. For multiple biases this component is labeled using the number of the bias as stepsize-#.");
 }
+void Optimizer::useFinalStepSizeKeywords(Keywords& keys) {
+  keys.use("FINAL_STEPSIZE");
+}
 
 
 void Optimizer::useMaskKeywords(Keywords& keys) {
@@ -949,6 +1092,16 @@ void Optimizer::useDynamicTargetDistributionKeywords(Keywords& keys) {
   keys.use("TARGETDIST_STRIDE");
   keys.use("TARGETDIST_OUTPUT");
   keys.use("TARGETDIST_PROJ_OUTPUT");
+}
+
+void Optimizer::useAdamFactorKeywords(Keywords& keys) {
+  //use_adam_=true;
+  keys.use("BETA1");
+  keys.use("BETA2");
+  keys.use("EPSILON");
+  keys.use("ADAM_M_FILE");
+  keys.use("ADAM_V_FILE");
+  keys.use("ITER_DECAY");
 }
 
 
@@ -1063,9 +1216,16 @@ void Optimizer::update() {
         aver_gradient_pntrs_[i]->setIterationCounterAndTime(curr_iter,curr_time);
         aver_gradient_pntrs_[i]->addToAverage(*gradient_pntrs_[i]);
       }
+      if(adamm_pntrs_.size()>0) {
+        adamm_pntrs_[i]->setIterationCounterAndTime(curr_iter,curr_time);
+        adamv_pntrs_[i]->setIterationCounterAndTime(curr_iter,curr_time);
+      }
     }
     increaseIterationCounter();
-
+    updateOutputComponents();
+    for(unsigned int i=0; i<ncoeffssets_; i++) {
+      writeOutputFiles(i);
+    }
     if(ustride_targetdist_>0 && getIterationCounter()%ustride_targetdist_==0) {
       for(unsigned int i=0; i<nbiases_; i++) {
         if(dynamic_targetdists_[i]) {
@@ -1079,10 +1239,7 @@ void Optimizer::update() {
       }
     }
 
-    updateOutputComponents();
-    for(unsigned int i=0; i<ncoeffssets_; i++) {
-      writeOutputFiles(i);
-    }
+
     //
     if(isBiasOutputActive() && getIterationCounter()%getBiasOutputStride()==0) {
       writeBiasOutputFiles();
@@ -1124,7 +1281,7 @@ void Optimizer::updateOutputComponents() {
   }
   else {
     for(unsigned int i=0; i<ncoeffssets_; i++) {
-      std::string is=""; Tools::convert(i,is); is = "-" + coeffssetid_prefix_ + is;
+      std::string is=""; Tools::convert(i,is); is = "_" + coeffssetid_prefix_ + is;
       if(!fixed_stepsize_) {
         getPntrToComponent("stepsize"+is)->set( getCurrentStepSize(i) );
       }
@@ -1166,6 +1323,12 @@ void Optimizer::writeOutputFiles(const unsigned int coeffs_id) {
   }
   if(hessianOFiles_.size()>0 && iter_counter%hessian_wstride_==0) {
     hessian_pntrs_[coeffs_id]->writeToFile(*hessianOFiles_[coeffs_id]);
+  }
+  if(adammOFiles_.size()>0 && iter_counter%adamm_wstride_==0) {
+    adamm_pntrs_[coeffs_id]->writeToFile(*adammOFiles_[coeffs_id],false);
+  }
+  if(adamvOFiles_.size()>0 && iter_counter%adamv_wstride_==0) {
+    adamv_pntrs_[coeffs_id]->writeToFile(*adamvOFiles_[coeffs_id],false);
   }
   if(targetdist_averagesOFiles_.size()>0 && iter_counter%targetdist_averages_wstride_==0) {
     targetdist_averages_pntrs_[coeffs_id]->writeToFile(*targetdist_averagesOFiles_[coeffs_id]);
@@ -1236,6 +1399,43 @@ void Optimizer::readCoeffsFromFiles(const std::vector<std::string>& fnames, cons
 }
 
 
+void Optimizer::readAdamTermsFromFiles(const std::vector<std::string>& fnames, const bool read_m) {
+  plumed_assert(ncoeffssets_>0);
+  plumed_assert(fnames.size()==ncoeffssets_);
+  if(read_m) {
+    log.printf("  Read in m terms from file(s) ;\n");
+  }
+  else {
+    log.printf("  Read in v terms from file(s) ;\n");
+  }
+  for(unsigned int i=0; i<ncoeffssets_; i++) {
+    IFile ifile;
+    ifile.link(*this);
+    if(use_mwalkers_mpi_ && mwalkers_mpi_single_files_) {
+      ifile.enforceSuffix("");
+    }
+    ifile.open(fnames[i]);
+    if(read_m) {
+      if(!ifile.FieldExist(adamm_pntrs_[i]->getDataLabel())) {
+        std::string error_msg = "Problem with reading from file " + ifile.getPath() + ": no field with name " + adamm_pntrs_[i]->getDataLabel() + "\n";
+        plumed_merror(error_msg);
+      }
+      size_t adam_term_read = adamm_pntrs_[i]->readFromFile(ifile,false,false);
+      log.printf("   Adam term set %u: %s (read %zu of %zu values)\n",i,ifile.getPath().c_str(),adam_term_read,adamm_pntrs_[i]->numberOfCoeffs());
+    }
+    else {
+      if(!ifile.FieldExist(adamv_pntrs_[i]->getDataLabel())) {
+        std::string error_msg = "Problem with reading from file " + ifile.getPath() + ": no field with name " + adamv_pntrs_[i]->getDataLabel() + "\n";
+        plumed_merror(error_msg);
+      }
+      size_t adam_term_read = adamv_pntrs_[i]->readFromFile(ifile,false,false);
+      log.printf("   Adam term set %u: %s (read %zu of %zu values)\n",i,ifile.getPath().c_str(),adam_term_read,adamv_pntrs_[i]->numberOfCoeffs());
+    }
+    ifile.close();
+  }
+}
+
+
 void Optimizer::addCoeffsSetIDsToFilenames(std::vector<std::string>& fnames, std::string& coeffssetid_prefix) {
   if(ncoeffssets_==1) {return;}
   //
@@ -1259,6 +1459,10 @@ void Optimizer::setAllCoeffsSetIterationCounters() {
     targetdist_averages_pntrs_[i]->setIterationCounterAndTime(getIterationCounter(),getTime());
     if(use_hessian_) {
       hessian_pntrs_[i]->setIterationCounterAndTime(getIterationCounter(),getTime());
+    }
+    if(adamm_pntrs_.size()>0) {
+      adamm_pntrs_[i]->setIterationCounterAndTime(getIterationCounter(),getTime());
+      adamv_pntrs_[i]->setIterationCounterAndTime(getIterationCounter(),getTime());
     }
   }
 }
