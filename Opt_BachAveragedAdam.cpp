@@ -32,9 +32,11 @@
 namespace PLMD {
 namespace ves {
 
-//+PLUMEDOC VES_OPTIMIZER OPT_AVERAGED_SGD
+//+PLUMEDOC VES_OPTIMIZER OPT_AVERAGED_ADAM
 /*
 Averaged stochastic gradient decent with fixed step size.
+
+replace to the Adam method by Yuki Mitsuta
 
 \par Algorithm
 
@@ -120,7 +122,7 @@ VES_LINEAR_EXPANSION ...
  GRID_BINS=100
 ... VES_LINEAR_EXPANSION
 
-OPT_AVERAGED_SGD ...
+OPT_AVERAGED_ADAM ...
   BIAS=ves1
   STRIDE=1000
   LABEL=o1
@@ -129,7 +131,7 @@ OPT_AVERAGED_SGD ...
   COEFFS_OUTPUT=50
   FES_OUTPUT=500
   BIAS_OUTPUT=500
-... OPT_AVERAGED_SGD
+... OPT_AVERAGED_ADAM
 \endplumedfile
 
 
@@ -159,7 +161,7 @@ VES_LINEAR_EXPANSION ...
  PROJ_ARG2=psi
 ... VES_LINEAR_EXPANSION
 
-OPT_AVERAGED_SGD ...
+OPT_AVERAGED_ADAM ...
   BIAS=ves1
   STRIDE=1000
   LABEL=o1
@@ -172,7 +174,7 @@ OPT_AVERAGED_SGD ...
   BIAS_OUTPUT=500
   TARGETDIST_STRIDE=500
   TARGETDIST_OUTPUT=2000
-... OPT_AVERAGED_SGD
+... OPT_AVERAGED_ADAM
 \endplumedfile
 
 
@@ -180,26 +182,40 @@ OPT_AVERAGED_SGD ...
 */
 //+ENDPLUMEDOC
 
-class Opt_BachAveragedSGD : public Optimizer {
+class Opt_BachAveragedADAM : public Optimizer {
 private:
   std::vector<std::unique_ptr<CoeffsVector>> combinedgradient_pntrs_;
   unsigned int combinedgradient_wstride_;
   std::vector<std::unique_ptr<OFile>> combinedgradientOFiles_;
   double decaying_aver_tau_;
+  double m;
+  double m_before;
+  std::vector<std::vector<double>> m_before_vecvec;
+  double m_hat;
+  double v;
+  double v_before;
+  std::vector<std::vector<double>> v_before_vecvec;
+  double v_hat;
+  double gradgrad;
+  //double beta1_;
+  //double beta2_;
+  //double epsilon_;
 private:
   CoeffsVector& CombinedGradient(const unsigned int c_id) const {return *combinedgradient_pntrs_[c_id];}
   double getAverDecay() const;
 public:
   static void registerKeywords(Keywords&);
-  explicit Opt_BachAveragedSGD(const ActionOptions&);
+  explicit Opt_BachAveragedADAM(const ActionOptions&);
+  ~Opt_BachAveragedADAM();
+
   void coeffsUpdate(const unsigned int c_id = 0) override;
 };
 
 
-PLUMED_REGISTER_ACTION(Opt_BachAveragedSGD,"OPT_AVERAGED_SGD")
+PLUMED_REGISTER_ACTION(Opt_BachAveragedADAM,"OPT_AVERAGED_ADAM")
 
 
-void Opt_BachAveragedSGD::registerKeywords(Keywords& keys) {
+void Opt_BachAveragedADAM::registerKeywords(Keywords& keys) {
   Optimizer::registerKeywords(keys);
   Optimizer::useFixedStepSizeKeywords(keys);
   Optimizer::useMultipleWalkersKeywords(keys);
@@ -208,15 +224,27 @@ void Opt_BachAveragedSGD::registerKeywords(Keywords& keys) {
   Optimizer::useRestartKeywords(keys);
   Optimizer::useMonitorAverageGradientKeywords(keys);
   Optimizer::useDynamicTargetDistributionKeywords(keys);
+  Optimizer::useAdamFactorKeywords(keys);
   keys.add("hidden","COMBINED_GRADIENT_FILE","the name of output file for the combined gradient (gradient + Hessian term)");
   keys.add("hidden","COMBINED_GRADIENT_OUTPUT","how often the combined gradient should be written to file. This parameter is given as the number of bias iterations. It is by default 100 if COMBINED_GRADIENT_FILE is specficed");
   keys.add("hidden","COMBINED_GRADIENT_FMT","specify format for combined gradient file(s) (useful for decrease the number of digits in regtests)");
   keys.add("optional","EXP_DECAYING_AVER","calculate the averaged coefficients using exponentially decaying averaging using the decaying constant given here in the number of iterations");
+
 }
 
 
+Opt_BachAveragedADAM::~Opt_BachAveragedADAM() {
+  for(unsigned int i=0; i<combinedgradient_pntrs_.size(); i++) {
+    delete combinedgradient_pntrs_[i];
+  }
+  for(unsigned int i=0; i<combinedgradientOFiles_.size(); i++) {
+    combinedgradientOFiles_[i]->close();
+    delete combinedgradientOFiles_[i];
+  }
+}
 
-Opt_BachAveragedSGD::Opt_BachAveragedSGD(const ActionOptions&ao):
+
+Opt_BachAveragedADAM::Opt_BachAveragedADAM(const ActionOptions&ao):
   PLUMED_VES_OPTIMIZER_INIT(ao),
   combinedgradient_wstride_(100),
   decaying_aver_tau_(0.0)
@@ -268,28 +296,51 @@ Opt_BachAveragedSGD::Opt_BachAveragedSGD(const ActionOptions&ao):
   }
   //
 
-  turnOnHessian();
+  //turnOnHessian();
+  turnOffHessian();
+  log.printf("  the Hessian is turned off\n");
   checkRead();
 }
 
 
-void Opt_BachAveragedSGD::coeffsUpdate(const unsigned int c_id) {
+void Opt_BachAveragedADAM::coeffsUpdate(const unsigned int c_id) {
   //
   if(combinedgradientOFiles_.size()>0 && (getIterationCounter()+1)%combinedgradient_wstride_==0) {
-    CombinedGradient(c_id).setValues( ( Gradient(c_id) + Hessian(c_id)*(AuxCoeffs(c_id)-Coeffs(c_id)) ) );
+    //CombinedGradient(c_id).setValues( ( Gradient(c_id) + Hessian(c_id)*(AuxCoeffs(c_id)-Coeffs(c_id)) ) );
+    CombinedGradient(c_id).setValues(Gradient(c_id));
     combinedgradient_pntrs_[c_id]->setIterationCounterAndTime(getIterationCounter()+1,getTime());
     combinedgradient_pntrs_[c_id]->writeToFile(*combinedgradientOFiles_[c_id]);
   }
   //
-  double aver_decay = getAverDecay();
-  AuxCoeffs(c_id) += - StepSize(c_id)*CoeffsMask(c_id) * ( Gradient(c_id) + Hessian(c_id)*(AuxCoeffs(c_id)-Coeffs(c_id)) );
+  //double aver_decay = getAverDecay();
+  //AuxCoeffs(c_id) += - StepSize(c_id)*CoeffsMask(c_id) * ( Gradient(c_id) + Hessian(c_id)*(AuxCoeffs(c_id)-Coeffs(c_id)) );
+  //AuxCoeffs(c_id) += - StepSize(c_id)*CoeffsMask(c_id) * ( Gradient(c_id) );
   //AuxCoeffs() = AuxCoeffs() - StepSize() * ( Gradient() + Hessian()*(AuxCoeffs()-Coeffs()) );
-  Coeffs(c_id) += aver_decay * ( AuxCoeffs(c_id)-Coeffs(c_id) );
+  //Coeffs(c_id) += aver_decay * ( AuxCoeffs(c_id)-Coeffs(c_id) );
+  //parse("BETA2",beta2_);
+  //parse("EPSILON",epsilon_);
+  double aver_decay = getAverDecay();
+  //beta1_ = 0.9;
+  //beta2_ = 0.999;
+  //epsilon_ = 1.0e-8;
+  //log.printf(" pow\n");
+  unsigned int t = getIterationCounter();
+  //double beta_pow = sqrt(1.0-std::pow(beta2_,t+1.0))/(1.0-std::pow(beta1_,t+1.0));
+  for(unsigned int i=0; i<Coeffs(c_id).getSize(); i++) {
+    double gradgrad = Gradient(c_id)[i] * Gradient(c_id)[i];
+    double m = beta1_ * AdamM(c_id)[i] + (1.0 - beta1_) * Gradient(c_id)[i];
+    double v = beta2_ * AdamV(c_id)[i] + (1.0 - beta2_) * gradgrad;
+    //AuxCoeffs(c_id)[i] -= StepSize(c_id) * CoeffsMask(c_id)[i] * m * beta_pow / sqrt(v + epsilon_);
+    AuxCoeffs(c_id)[i] -= StepSize(c_id) * CoeffsMask(c_id)[i] * m / sqrt(v + epsilon_);
+    Coeffs(c_id)[i] += aver_decay * ( AuxCoeffs(c_id)[i] - Coeffs(c_id)[i] );
+    AdamM(c_id)[i] = m;
+    AdamV(c_id)[i] = v;
+  }
 }
 
 
 inline
-double Opt_BachAveragedSGD::getAverDecay() const {
+double Opt_BachAveragedADAM::getAverDecay() const {
   double aver_decay = 1.0 / ( getIterationCounterDbl() + 1.0 );
   if(decaying_aver_tau_ > 0.0 && (getIterationCounterDbl() + 1.0) > decaying_aver_tau_) {
     aver_decay = 1.0 / decaying_aver_tau_;
