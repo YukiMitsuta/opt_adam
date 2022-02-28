@@ -1,5 +1,5 @@
 /* +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-   Copyright (c) 2016-2018 The VES code team
+   Copyright (c) 2016-2021 The VES code team
    (see the PEOPLE-VES file at the root of this folder for a list of names)
 
    See http://www.ves-code.org for more information.
@@ -28,7 +28,7 @@
 namespace PLMD {
 namespace ves {
 
-//+PLUMEDOC VES_BASISF BF_CHEBYSHEV
+//+PLUMEDOC VES_BASISF BF_CHEBYSHEV_SYMM
 /*
 Chebyshev polynomial basis functions.
 
@@ -87,60 +87,66 @@ bfC: BF_CHEBYSHEV MINIMUM=0.0 MAXIMUM=10.0 ORDER=20
 //+ENDPLUMEDOC
 
 
-class BF_Chebyshev : public BasisFunctions {
+class BF_Chebyshev_Symmetry : public BasisFunctions {
   void setupUniformIntegrals() override;
 public:
   static void registerKeywords(Keywords&);
-  explicit BF_Chebyshev(const ActionOptions&);
+  explicit BF_Chebyshev_Symmetry(const ActionOptions&);
   void getAllValues(const double, double&, bool&, std::vector<double>&, std::vector<double>&) const override;
 };
 
 
-PLUMED_REGISTER_ACTION(BF_Chebyshev,"BF_CHEBYSHEV")
+PLUMED_REGISTER_ACTION(BF_Chebyshev_Symmetry,"BF_CHEBYSHEV_SYMMETRY")
 
 
-void BF_Chebyshev::registerKeywords(Keywords& keys) {
+void BF_Chebyshev_Symmetry::registerKeywords(Keywords& keys) {
   BasisFunctions::registerKeywords(keys);
 }
 
-BF_Chebyshev::BF_Chebyshev(const ActionOptions&ao):
+BF_Chebyshev_Symmetry::BF_Chebyshev_Symmetry(const ActionOptions&ao):
   PLUMED_VES_BASISFUNCTIONS_INIT(ao)
 {
   setNumberOfBasisFunctions(getOrder()+1);
   setIntrinsicInterval("-1.0","+1.0");
   setNonPeriodic();
   setIntervalBounded();
-  setType("chebyshev-1st-kind");
-  setDescription("Chebyshev polynomials of the first kind");
+  setType("chebyshev-1st-kind (Symmetry)");
+  setDescription("Chebyshev polynomials of the first kind (Symmetry)");
   setLabelPrefix("T");
   setupBF();
   checkRead();
 }
 
 
-void BF_Chebyshev::getAllValues(const double arg, double& argT, bool& inside_range, std::vector<double>& values, std::vector<double>& derivs) const {
+void BF_Chebyshev_Symmetry::getAllValues(const double arg, double& argT, bool& inside_range, std::vector<double>& values, std::vector<double>& derivs) const {
   // plumed_assert(values.size()==numberOfBasisFunctions());
   // plumed_assert(derivs.size()==numberOfBasisFunctions());
   inside_range=true;
   argT=translateArgument(arg, inside_range);
-  std::vector<double> derivsT(derivs.size());
+  std::vector<double> values_double(derivs.size()*2);
+  std::vector<double> derivs_double(derivs.size()*2);
+  std::vector<double> derivsT(derivs.size()*2);
   //
-  values[0]=1.0;
+  values_double[0]=1.0;
   derivsT[0]=0.0;
-  derivs[0]=0.0;
-  values[1]=argT;
+  derivs_double[0]=0.0;
+  values_double[1]=argT;
   derivsT[1]=1.0;
-  derivs[1]=intervalDerivf();
-  for(unsigned int i=1; i < getOrder(); i++) {
-    values[i+1]  = 2.0*argT*values[i]-values[i-1];
-    derivsT[i+1] = 2.0*values[i]+2.0*argT*derivsT[i]-derivsT[i-1];
-    derivs[i+1]  = intervalDerivf()*derivsT[i+1];
+  derivs_double[1]=intervalDerivf();
+  for(unsigned int i=1; i < getOrder()*2; i++) {
+    values_double[i+1]  = 2.0*argT*values_double[i]-values_double[i-1];
+    derivsT[i+1] = 2.0*values_double[i]+2.0*argT*derivsT[i]-derivsT[i-1];
+    derivs_double[i+1]  = intervalDerivf()*derivsT[i+1];
+  }
+  for(unsigned int i=0; i < values.size(); i++) {
+    values[i]  = values_double[i*2];
+    derivs[i]  = derivs_double[i*2];
   }
   if(!inside_range) {for(unsigned int i=0; i<derivs.size(); i++) {derivs[i]=0.0;}}
 }
 
 
-void BF_Chebyshev::setupUniformIntegrals() {
+void BF_Chebyshev_Symmetry::setupUniformIntegrals() {
   for(unsigned int i=0; i<numberOfBasisFunctions(); i++) {
     double io = i;
     double value = 0.0;
