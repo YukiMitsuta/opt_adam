@@ -912,6 +912,7 @@ Optimizer::~Optimizer() {
   if(isTargetDistProjOutputActive() && getIterationCounter()%getTargetDistProjOutputStride()!=0) {
     writeTargetDistProjOutputFiles();
   }
+/*
   //
   for(unsigned int i=0; i<aux_coeffs_pntrs_.size(); i++) {
     delete aux_coeffs_pntrs_[i];
@@ -948,6 +949,8 @@ Optimizer::~Optimizer() {
     delete targetdist_averagesOFiles_[i];
   }
   targetdist_averagesOFiles_.clear();
+*/
+
 /*
   for(unsigned int i=0; i<adammOFiles_.size(); i++) {
     adammOFiles_[i]->close();
