@@ -234,6 +234,7 @@ void Opt_BachAveragedADAM::registerKeywords(Keywords& keys) {
 
 
 Opt_BachAveragedADAM::~Opt_BachAveragedADAM() {
+/*
   for(unsigned int i=0; i<combinedgradient_pntrs_.size(); i++) {
     delete combinedgradient_pntrs_[i];
   }
@@ -241,6 +242,7 @@ Opt_BachAveragedADAM::~Opt_BachAveragedADAM() {
     combinedgradientOFiles_[i]->close();
     delete combinedgradientOFiles_[i];
   }
+*/
 }
 
 

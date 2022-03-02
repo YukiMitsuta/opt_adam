@@ -43,12 +43,12 @@ VesBias::VesBias(const ActionOptions&ao):
   Action(ao),
   Bias(ao),
   ncoeffssets_(0),
-  coeffs_pntrs_(0),
-  adamm_pntrs_(0),
-  adamv_pntrs_(0),
-  targetdist_averages_pntrs_(0),
-  gradient_pntrs_(0),
-  hessian_pntrs_(0),
+  //coeffs_pntrs_(0),
+  //adamm_pntrs_(0),
+  //adamv_pntrs_(0),
+  //targetdist_averages_pntrs_(0),
+  //gradient_pntrs_(0),
+  //hessian_pntrs_(0),
   sampled_averages(0),
   sampled_cross_averages(0),
   use_multiple_coeffssets_(false),
@@ -241,6 +241,7 @@ VesBias::VesBias(const ActionOptions&ao):
 
 
 VesBias::~VesBias() {
+/*
   for(unsigned int i=0; i<coeffs_pntrs_.size(); i++) {
     delete coeffs_pntrs_[i];
   }
@@ -262,6 +263,7 @@ VesBias::~VesBias() {
   for(unsigned int i=0; i<adamv_pntrs_.size(); i++) {
     delete adamv_pntrs_[i];
   }
+*/
 }
 
 
@@ -399,6 +401,7 @@ void VesBias::initializeCoeffs(std::unique_ptr<CoeffsVector> coeffs_pntr_in) {
   //
   aver_counters.push_back(0);
   //
+  /* for plumed-2.7
   CoeffsVector* adamm_tmp = new CoeffsVector(*coeffs_pntr_in);
   label = getCoeffsSetLabelString("adam_m",ncoeffssets_);
   adamm_tmp->setLabels(label);
@@ -408,6 +411,17 @@ void VesBias::initializeCoeffs(std::unique_ptr<CoeffsVector> coeffs_pntr_in) {
   label = getCoeffsSetLabelString("adam_v",ncoeffssets_);
   adamv_tmp->setLabels(label);
   adamv_pntrs_.push_back(adamv_tmp);
+  */
+  //
+  auto adamm_tmp = Tools::make_unique<CoeffsVector>(*coeffs_pntrs_.back());
+  label = getCoeffsSetLabelString("adam_m",ncoeffssets_);
+  adamm_tmp->setLabels(label);
+  adamm_pntrs_.emplace_back(std::move(adamm_tmp));
+  //
+  auto adamv_tmp = Tools::make_unique<CoeffsVector>(*coeffs_pntrs_.back());
+  label = getCoeffsSetLabelString("adam_v",ncoeffssets_);
+  adamv_tmp->setLabels(label);
+  adamv_pntrs_.emplace_back(std::move(adamv_tmp));
   //
   ncoeffssets_++;
 }

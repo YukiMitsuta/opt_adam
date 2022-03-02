@@ -96,11 +96,13 @@ private:
   std::string hessian_output_fmt_;
   //
   unsigned int adamm_wstride_;
-  std::vector<OFile*> adammOFiles_;
+  //std::vector<OFile*> adammOFiles_;
+  std::vector<std::unique_ptr<OFile>> adammOFiles_;
   std::string adamm_output_fmt_;
   //
   unsigned int adamv_wstride_;
-  std::vector<OFile*> adamvOFiles_;
+  //std::vector<OFile*> adamvOFiles_;
+  std::vector<std::unique_ptr<OFile>> adamvOFiles_;
   std::string adamv_output_fmt_;
   //
   unsigned int targetdist_averages_wstride_;

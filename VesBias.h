@@ -69,8 +69,10 @@ private:
   std::vector<std::vector<double> > sampled_averages;
   std::vector<std::vector<double> > sampled_cross_averages;
   //
-  std::vector<CoeffsVector*> adamm_pntrs_;
-  std::vector<CoeffsVector*> adamv_pntrs_;
+  //std::vector<CoeffsVector*> adamm_pntrs_;
+  //std::vector<CoeffsVector*> adamv_pntrs_;
+  std::vector<std::unique_ptr<CoeffsVector>> adamm_pntrs_;
+  std::vector<std::unique_ptr<CoeffsVector>> adamv_pntrs_;
   //
   bool use_multiple_coeffssets_;
   //
@@ -177,8 +179,10 @@ public:
   CoeffsVector* getTargetDistAveragesPntr(const unsigned int coeffs_id = 0) const {return targetdist_averages_pntrs_[coeffs_id].get();}
   CoeffsVector* getGradientPntr(const unsigned int coeffs_id = 0)const {return gradient_pntrs_[coeffs_id].get();}
   CoeffsMatrix* getHessianPntr(const unsigned int coeffs_id = 0) const {return hessian_pntrs_[coeffs_id].get();}
-  std::vector<CoeffsVector*> getAdamMPntrs()const {return adamm_pntrs_;}
-  std::vector<CoeffsVector*> getAdamVPntrs()const {return adamv_pntrs_;}
+  //std::vector<CoeffsVector*> getAdamMPntrs()const {return adamm_pntrs_;}
+  //std::vector<CoeffsVector*> getAdamVPntrs()const {return adamv_pntrs_;}
+  std::vector<CoeffsVector*> getAdamMPntrs()const {return Tools::unique2raw(adamm_pntrs_);}
+  std::vector<CoeffsVector*> getAdamVPntrs()const {return Tools::unique2raw(adamv_pntrs_);}
   //
   //
   unsigned int getNumberOfTargetDistributionPntrs() const {return targetdist_pntrs_.size();}
